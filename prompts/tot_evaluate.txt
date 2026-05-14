@@ -1,0 +1,7 @@
+Given the following problem and a candidate reasoning step, rate the step as "sure", "maybe", or "impossible" to lead to the correct answer.
+
+Problem: {problem}
+Current reasoning so far: {current_reasoning}
+Candidate next step: {candidate}
+
+Rate this step (sure/maybe/impossible) and briefly explain why:

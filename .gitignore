@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+tot_log.txt
+tot_err.txt
+tot_results_partial.json
+data/gsm8k_train.json
+data/gsm8k_test.json
