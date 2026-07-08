@@ -1,0 +1,847 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{array}
+\usepackage{makecell}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{cite}
+\usepackage[final]{microtype}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\setlength{\emergencystretch}{3em}
+
+% Tighten bibliography vertical spacing to fit the page limit
+% (purely cosmetic; no reference content is changed)
+\let\oldthebibliography\thebibliography
+\renewcommand{\thebibliography}[1]{%
+  \oldthebibliography{#1}%
+  \setlength{\itemsep}{0pt}%
+  \setlength{\parskip}{0pt}%
+  \setlength{\parsep}{0pt}%
+}
+
+\begin{document}
+
+\title{In-Context Learning: Chain-of-Thought vs.\ Tree-of-Thoughts
+Prompting on Multi-Step Reasoning}
+
+\author{
+\IEEEauthorblockN{O\u{g}uzhan \c{C}akal}
+\IEEEauthorblockA{\textit{Department of Computer Engineering} \\
+\textit{\.{I}zmir Institute of Technology (\.{I}YTE)}\\
+\.{I}zmir, Turkey \\
+oguzhancakal@std.iyte.edu.tr}
+\and
+\IEEEauthorblockN{Sercan Utku Temelci}
+\IEEEauthorblockA{\textit{Department of Computer Engineering} \\
+\textit{\.{I}zmir Institute of Technology (\.{I}YTE)}\\
+\.{I}zmir, Turkey \\
+sercanutkutemelci@std.iyte.edu.tr}
+}
+
+\maketitle
+
+\begin{abstract}
+We present an empirical comparison of four In-Context Learning (ICL)
+prompting strategies on the GSM8K grade-school mathematics
+benchmark---Zero-Shot Chain-of-Thought (CoT), Few-Shot CoT (8-shot),
+Tree-of-Thoughts (ToT) with BFS at two search depths, and
+Self-Consistency voting---using Llama~3.1~8B via the Groq API without
+fine-tuning.
+Zero-Shot CoT achieves \textbf{95.0\%}, Self-Consistency
+\textbf{92.0\%}, and ToT (BFS-2, depth=6) and Few-Shot CoT each
+\textbf{85.0\%} on the same 100-problem seed-42 sample.
+A single answer-extraction format instruction raises Zero-Shot CoT by
+$7$~pp (88.0\%~$\rightarrow$~95.0\%) and reorders the strategies---a
+parsing confound, not a reasoning gain---placing it alone on the
+accuracy--cost Pareto frontier at the 8B scale.
+A depth ablation yields only $+4.0$~pp at $2.1\times$ cost, indicating
+diminishing returns when the evaluator is the same 8B backbone.
+A cross-model replication on Claude Haiku~4.5 with full evaluation
+identity preserved collapses the inter-strategy gap from $14$ to
+$2$~pp, revealing a \emph{ceiling effect}: deliberation- and
+ensemble-style strategies pay off only when the base model has headroom
+to lose and identifiable wrong branches to prune.
+A pairwise Cohen's $\kappa$ analysis confirms this---ToT depths on
+Llama reach near-zero agreement ($\kappa{=}0.011$) versus perfect
+agreement on Haiku ($\kappa{=}1.000$).
+\end{abstract}
+
+\begin{IEEEkeywords}
+Chain-of-thought, GSM8K, in-context learning, large language models,
+multi-step reasoning, self-consistency, tree-of-thoughts
+\end{IEEEkeywords}
+
+%------------------------------------------------------------------------
+\section{Introduction}
+\label{sec:intro}
+
+Large Language Models (LLMs) have demonstrated remarkable capabilities
+in natural language tasks through In-Context Learning (ICL), where the
+model adapts to new tasks from demonstrations provided in the prompt
+without updating model weights~\cite{brown2020gpt3}.
+This ability to generalise from a handful of examples has made ICL
+the dominant paradigm for practical LLM deployment, motivating active
+research into how the structure and content of prompts influence
+multi-step reasoning quality.
+Among ICL techniques, Chain-of-Thought (CoT) prompting has emerged as
+a particularly effective approach, guiding models to produce
+intermediate reasoning steps before arriving at a final
+answer~\cite{wei2022cot}.
+The zero-shot variant~\cite{kojima2022zeroshot} further simplified
+this by showing that a single trigger phrase suffices for
+instruction-tuned models to produce step-by-step reasoning, suggesting
+that structured reasoning has been internalised during pre-training.
+
+Tree-of-Thoughts (ToT) extends this paradigm by exploring multiple
+reasoning branches simultaneously and pruning low-quality paths through
+a separate evaluation step~\cite{yao2023tot}.
+While ToT has shown impressive gains over CoT on GPT-4, its
+effectiveness on smaller, open-weight models remains unexplored.
+A central open question is whether the multi-branch search ToT
+provides translates to accuracy gains when the evaluator model is the
+same small backbone---or whether evaluator weakness undermines the
+pruning mechanism entirely.
+
+This paper presents a controlled empirical comparison of four
+prompting strategies (Zero-Shot CoT, Few-Shot CoT (8-shot), ToT
+with BFS, and Self-Consistency) on the GSM8K
+benchmark~\cite{cobbe2021gsm8k}, using Llama~3.1~8B as a common
+backbone, complemented by a ToT depth ablation and a cross-model
+replication on Claude Haiku~4.5 (a frontier-tier model) under exact
+sample, prompt, and evaluation identity.
+Our three findings are summarised next as contributions.
+
+\paragraph{Contributions}
+This paper makes three empirical contributions, all derived from a
+single controlled comparison rather than from new model training or
+larger experiments:
+\begin{itemize}
+\item \textbf{A scale-dependent ceiling effect.} Strategy ordering is
+not an intrinsic property of the prompting method but a function of
+backbone capability: the inter-strategy accuracy spread collapses from
+$14$~pp on Llama~3.1~8B to $2$~pp on Claude Haiku~4.5, and the
+\emph{simplest} strategy on the strong backbone (Zero-Shot CoT, 97.0\%)
+outperforms the \emph{most elaborate} strategy on the weak one
+(Self-Consistency, 92.0\%). A pairwise Cohen's $\kappa$ analysis
+confirms this independently
+(Sections~\ref{sec:results:crossmodel}--\ref{sec:results:kappa}).
+\item \textbf{Search depth is not the ToT bottleneck; evaluator
+discrimination is.} Doubling ToT search depth (3$\rightarrow$6) buys
+only $+4.0$~pp at $2.1\times$ inference cost on Llama and
+$+0.0$~pp on Haiku, isolating the weak \emph{sure/maybe/impossible}
+self-evaluator---not insufficient depth---as the factor that prevents
+deliberate search from helping at the 8B scale
+(Section~\ref{sec:results:depth}).
+\item \textbf{Answer-extraction format is a confound in CoT
+benchmarking.} A single output-format instruction raises Zero-Shot CoT
+by $+7$~pp (88.0\%~$\rightarrow$~95.0\%) without changing the reasoning
+process, showing that accuracy gaps attributed to a prompting
+\emph{method} can partly reflect answer-extraction \emph{format} and
+must be controlled when comparing strategies
+(Section~\ref{sec:setup}).
+\end{itemize}
+
+%------------------------------------------------------------------------
+\section{Related Work}
+\label{sec:related}
+
+The foundational prompting strategy for multi-step reasoning is
+Chain-of-Thought (CoT), introduced by Wei et al.~\cite{wei2022cot},
+who demonstrated that providing few-shot examples with step-by-step
+solutions substantially improves LLM performance on arithmetic and
+symbolic reasoning.
+Kojima et al.~\cite{kojima2022zeroshot} subsequently showed that
+simply appending \textit{``Let's think step by step''} to a query
+elicits CoT reasoning in a zero-shot setting, establishing a
+lightweight baseline that avoids hand-crafted demonstrations and
+anchors our Zero-Shot CoT configuration.
+
+Building directly on CoT, Yao et al.~\cite{yao2023tot} proposed
+Tree-of-Thoughts (ToT), which frames reasoning as a search problem
+over a tree of intermediate ``thoughts''.
+At each node, the model generates multiple candidate continuations,
+evaluates them with a separate scoring prompt (assigning
+\textit{sure/maybe/impossible}), and retains only the most promising
+branches using BFS or DFS.
+Their experiments with GPT-4 showed substantial gains on tasks
+requiring deliberate planning; however, all results used models with
+100B+ parameters, leaving the effectiveness of the same mechanism on
+smaller open-weight evaluators as an open question.
+
+A complementary ensemble approach was proposed by Wang et
+al.~\cite{wang2022selfconsistency}, who showed that sampling diverse
+CoT paths at temperature $>0$ and selecting the final answer by
+majority vote improves CoT accuracy by 10--20~pp without changing the
+prompt.
+Self-Consistency thus occupies a middle ground between the
+minimal-cost single-chain CoT and the expensive multi-branch ToT.
+
+All three strategies are instances of the In-Context Learning paradigm
+of Brown et al.~\cite{brown2020gpt3}---generalising to unseen tasks from
+a few in-context demonstrations without gradient updates---which makes
+them directly comparable under a fixed model and prompt template.
+Other structured-prompting variants (Automatic
+CoT~\cite{zhang2022autocot}, which clusters questions to auto-generate
+demonstrations, and Least-to-Most~\cite{zhou2022ltm}, which decomposes a
+problem into ordered subproblems) map out a broader design space; we
+focus on the four most widely adopted strategies for a controlled
+comparison.
+
+%------------------------------------------------------------------------
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Zero-Shot Chain-of-Thought}
+The problem is presented with the trigger phrase
+\textit{``Let's think step by step.''}~\cite{kojima2022zeroshot}
+plus the output-format instruction
+\textit{``End your response with: The answer is X.''}
+to prevent trailing-modifier parse errors
+(see Section~\ref{sec:setup}, \emph{Answer-extraction format fix}).
+
+\subsection{Few-Shot Chain-of-Thought (8-shot)}
+Eight worked examples from Wei et al.~\cite{wei2022cot} are prepended
+to the query, each containing a full reasoning chain ending with
+\textit{``The answer is X.''}\ followed by the test problem.
+
+\subsection{Tree-of-Thoughts (BFS, branching=2, depth=6)}
+\label{sec:method:totfixed}
+ToT (\texttt{src/run\_tot\_fixed.py}) explores a tree of intermediate
+``thoughts''.
+At each depth level, two candidate next-step thoughts are generated at
+temperature~$0.7$; a separate evaluator prompt scores each as
+\textit{sure}, \textit{maybe}, or \textit{impossible}, and only the
+former two are expanded.
+After BFS completion, a dedicated step extracts the final answer from
+the best leaf node.
+The configuration (branching factor 2, depth 6) uses $\sim$45 API calls
+per problem.
+
+\subsection{Self-Consistency (5 paths)}
+Few-Shot CoT is sampled 5 times per problem with temperature~$= 0.7$.
+The final answer is selected by majority vote over the 5 sampled
+numeric answers~\cite{wang2022selfconsistency}.
+
+\subsection{Cross-Model Evaluation Protocol}
+\label{sec:method:crossmodel}
+To test whether strategy orderings generalise beyond the 8B scale, we
+re-run all five configurations on Claude Haiku~4.5 with identical
+100-problem sample, prompts, parser, and gold-label correction, so any
+accuracy difference is attributable to the backbone alone.
+The three single-call strategies are batched through the Anthropic
+\texttt{messages.batches} API (50\% discount); ToT runs synchronously
+because its BFS state cannot be flattened into batch items.
+
+%------------------------------------------------------------------------
+\section{Experimental Setup}
+\label{sec:setup}
+
+\subsection{Dataset}
+We use GSM8K~\cite{cobbe2021gsm8k}, a benchmark of 8,792 grade-school
+math word problems requiring 2--8 chained reasoning steps.
+All five configurations (Zero-Shot CoT, Few-Shot CoT, ToT depth=3,
+ToT depth=6, and Self-Consistency) use the same 100-problem random
+sample of the test split (seed~$= 42$).
+One item in our sample contains a gold-label annotation error
+(see the \emph{GSM8K annotation error} paragraph below); we manually
+verified the correct value and use the corrected label in all
+evaluations, preserving the original sample sizes.
+
+\subsection{Model}
+All experiments use Llama~3.1~8B (\texttt{llama-3.1-8b-instant}) via
+the Groq inference API.
+No fine-tuning is applied; the model is used in its base instruction
+configuration.
+
+\subsection{Evaluation}
+The primary metric is \textit{exact-match accuracy}: the predicted
+final number is compared against the gold answer after stripping commas
+and converting to float.
+Answers are extracted by a regular expression capturing the gold-format
+marker \texttt{\#\#\#\#}, falling back to the last number otherwise.
+We also report the \textit{parse failure rate} (responses yielding no
+numeric prediction).
+Llama~3.1~8B never spontaneously produced the \texttt{\#\#\#\#} marker,
+so every response used the last-number fallback, which succeeded on all
+490 evaluated responses (parse failure rate~$= 0\%$).
+
+\subsection{Answer-Extraction Format Fix}
+An initial Zero-Shot CoT run sometimes ended with a trailing-modifier
+number rather than the substantive answer (e.g.\ ``\textit{36 hours
+in 4 weeks}'' $\rightarrow$ parser captures \texttt{4} instead of \texttt{36}).
+Appending ``\textit{End your response with: The answer is X.}'' to the
+prompt raised Zero-Shot CoT from \textbf{88.0\%} to \textbf{95.0\%}
+($+7$\,pp), concentrated in the hard bucket.
+All Zero-Shot CoT numbers use this format-aligned prompt; the other
+strategies already produce unambiguous final answers via their
+demonstrations or dedicated extraction prompts.
+Crucially, without this format alignment Zero-Shot CoT (88.0\%) would
+appear merely tied with Few-Shot CoT and ToT (both 85.0\%): the
+strategy ordering itself is altered by an extraction-format change that
+leaves the reasoning process untouched.
+Reported accuracy gaps between prompting strategies can therefore
+partly reflect answer-extraction format rather than reasoning ability,
+and the format must be held fixed---or reported---for a fair comparison
+(see Section~\ref{sec:discussion}).
+
+\subsection{GSM8K Annotation Error (Gold-Label Correction)}
+Manual inspection identified one annotation error in our sample
+(the \textit{carnival} item): the official gold label \$2{,}280 omits
+one addend; the correct total is $430+750+300+700=\$2{,}180$.
+We adopt the corrected label for all reported accuracies; Zero-Shot CoT
+and ToT depth=6 (both produced 2{,}180) shift from incorrect to correct,
+consistent with the $\sim$1--2\% annotation noise floor of
+GSM8K~\cite{cobbe2021gsm8k}.
+
+\subsection{Infrastructure}
+Rate-limit constraints on the Groq free tier required an 8-second
+inter-call pause (CoT) and a 30-second inter-problem pause (ToT).
+All random seeds are fixed at 42 for reproducibility.
+All code and result files are publicly available.\footnote{\url{https://github.com/OguzhanCKL/CENG467_In-Context_Learning}}
+
+\subsection{Secondary Model and Cross-Model Setup}
+\label{sec:setup:crossmodel}
+The secondary backbone is Claude Haiku~4.5
+(\texttt{claude-haiku-4-5-20251001}) via the Anthropic Python SDK,
+run on the same seed-42 sample, prompts, parser, and carnival
+gold-label correction as Llama, with batching as described in
+Section~\ref{sec:method:crossmodel} (700 batched requests).
+Realized total cost: \$3.26 across all five strategies
+(\$0.52 batch + \$0.72 ToT-d3 + \$2.02 ToT-d6).
+
+%------------------------------------------------------------------------
+\section{Results}
+\label{sec:results}
+
+\subsection{Main Results}
+
+Table~\ref{tab:main} summarises the accuracy of the four strategies.
+
+\begin{table*}[t]
+\centering
+\caption{Main results on GSM8K. Llama~3.1~8B, Groq API.
+Accuracies use the GSM8K gold labels with one item corrected (see
+Section~\ref{sec:setup}, \emph{GSM8K annotation error}).
+$\bar{T}$ denotes the average response length in tokens (one token
+$\approx$ four characters), aggregated across all API calls per problem;
+TPC = tokens per correct answer (lower is better).}
+\label{tab:main}
+\begin{tabular}{@{}lcccccl@{}}
+\toprule
+\textbf{Strategy} & \textbf{Accuracy} & \textbf{N} &
+\textbf{API Calls} & \boldmath$\bar{T}$ & \textbf{TPC} & \textbf{Status} \\
+\midrule
+Zero-Shot CoT                     & \textbf{95.0\%} & 100 & $\sim$1  & 189  & 199  & Complete \\
+Few-Shot CoT (8-shot)             & \textbf{85.0\%} & 100 & $\sim$1  & 145  & 171  & Complete \\
+Tree-of-Thoughts (BFS-2, depth=3) & \textbf{81.0\%} & 100 & $\sim$21 & 315  & 389  & Complete (ablation) \\
+Tree-of-Thoughts (BFS-2, depth=6) & \textbf{85.0\%} & 100 & $\sim$45 & 561  & 660  & Complete \\
+Self-Consistency (5 paths)        & \textbf{92.0\%} & 100 & 5        & 738  & 802  & Complete \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Beyond accuracy, we report two efficiency metrics that have become
+standard in recent reasoning benchmarks~\cite{ockbench2025,tale2024}:
+the average per-problem token budget $\bar{T}$ (a model-agnostic proxy
+for compute cost) and \textit{tokens per correct answer}
+($\text{TPC} = \bar{T} / \text{accuracy}$), which captures the
+practical cost of \emph{useful} reasoning---a method achieving high
+accuracy but spending disproportionately many tokens may be
+impractical~\cite{yao2023tot,ockbench2025}.
+Few-Shot CoT is the most token-efficient strategy (171 TPC), followed
+closely by Zero-Shot CoT (199); both ToT configurations spend
+2--4$\times$ more tokens per correct answer (389 and 660), and
+Self-Consistency---despite the highest accuracy---is the most expensive
+at 802~TPC, consistent with its 5$\times$ sample budget.
+
+Zero-Shot CoT achieves 95.0\% (after the answer-extraction
+format fix, Section~\ref{sec:setup}) and substantially
+outperforms Few-Shot CoT (85.0\%), reversing the typical
+expectation that more examples improve performance.
+This suggests that Llama~3.1~8B has already internalised strong
+step-by-step reasoning during pre-training, and the 8-shot
+demonstrations introduce noise rather than useful signal for this
+sample.
+
+ToT (depth=6) matches Few-Shot CoT at 85.0\% but trails Zero-Shot CoT
+by $10.0$\,pp; Section~\ref{sec:results:crossmodel} tests whether these
+orderings generalise to a stronger backbone.
+
+\subsection{Depth Ablation for Tree-of-Thoughts}
+\label{sec:results:depth}
+
+To isolate the effect of search depth, we ran ToT again on the same
+100-problem sample with \texttt{depth=3} (branching factor unchanged at
+2), mirroring the short-horizon depth of the original ToT
+paper~\cite{yao2023tot} against our deeper \texttt{depth=6} on identical
+problems and the same evaluator prompt.
+Table~\ref{tab:depth} reports the result and the accuracy--cost
+trade-off.
+
+\begin{table}[t]
+\centering
+\caption{ToT depth ablation on GSM8K (Llama~3.1~8B, BFS-2,
+identical evaluator prompt). Accuracies use the corrected GSM8K labels
+(see Section~\ref{sec:setup}).}
+\label{tab:depth}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Configuration} & \textbf{Accuracy} & \textbf{N} &
+\makecell{\textbf{API calls}\\\textbf{per problem}} &
+\makecell{\textbf{Wall-clock}\\\textbf{per problem}} \\
+\midrule
+ToT BFS-2, depth=3 & 81.0\% & 100 & $\sim$21 & $\sim$3 min \\
+ToT BFS-2, depth=6 & 85.0\% & 100 & $\sim$45 & $\sim$6 min \\
+\midrule
+$\Delta$ (depth=6 $-$ depth=3) & \textbf{+4.0\,pp} & -- &
+\textbf{+114\%} & \textbf{+100\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The $+4.0$\,pp gain is small relative to the $2.1\times$ cost increase.
+Unlike GPT-4's 100B+ evaluator~\cite{yao2023tot}, our 8B
+\textit{sure/maybe/impossible} scorer is weakly discriminative---most
+partial thoughts receive \textit{sure} regardless of correctness,
+collapsing BFS toward a near-linear chain.
+GSM8K problems (2--8 steps) also fit comfortably within depth=3,
+so additional depth helps only a small tail of multi-step problems.
+The bottleneck at the 8B scale is therefore evaluator discrimination
+rather than search depth.
+
+\subsection{Self-Consistency: Agreement and Pass@k}
+\label{sec:results:passk}
+
+We summarise two Self-Consistency diagnostics in text for brevity.
+\emph{Vote agreement:} all five paths agreed unanimously on 65\% of
+problems and reached a 4/5 or 3/5 majority on a further 30\%, so 95\%
+of problems admit a clean decision (88.2\% average majority margin),
+confirming that 5 paths suffice for reliable consensus.
+\emph{Pass@k}~\cite{chen2021codex} (the fraction of problems where at
+least one of the first $k$ paths is correct): Pass@1 $=87.0\%$ matches
+greedy Few-Shot CoT (85.0\%), so a single stochastic sample adds no
+consistent gain, whereas Pass@5 reaches $99.0\%$.
+This exposes a $+7.0$\,pp \textit{verification gap} over majority
+voting (92.0\%): in 7 of 100 problems the correct answer is among the
+five sampled paths but loses the vote, indicating that a smarter
+aggregator---not more samples---is the main opportunity for further
+gains.
+
+\subsection{Accuracy Stratified by Problem Complexity}
+\label{sec:results:stratified}
+
+We adopt the Cobbe et al.~\cite{cobbe2021gsm8k} difficulty split:
+problems are bucketed by gold-solution operation count into
+\textit{easy} ($<3$), \textit{medium} ($=3$), and \textit{hard}
+($>3$) groups (30/33/37 in our sample).
+Table~\ref{tab:strat} reports per-bucket accuracy.
+
+\begin{table*}[t]
+\centering
+\caption{Accuracy stratified by problem complexity
+(Cobbe et al.~\cite{cobbe2021gsm8k} split, gold-corrected; N=100,
+buckets 30/33/37) on both backbones. Llama columns are discussed in
+this section; Haiku columns in Section~\ref{sec:results:crossmodel}.
+All values are percentages; easy/medium/hard $=$ $<$3 / $=$3 / $>$3
+gold operations.}
+\label{tab:strat}
+\setlength{\tabcolsep}{5pt}
+\small
+\begin{tabular}{@{}lcccc@{\hspace{1.6em}}cccc@{}}
+\toprule
+& \multicolumn{4}{c}{\textbf{Llama~3.1~8B}} &
+  \multicolumn{4}{c}{\textbf{Haiku~4.5}} \\
+\cmidrule(lr){2-5}\cmidrule(l){6-9}
+\textbf{Strategy} & \textbf{Easy} & \textbf{Med} & \textbf{Hard} & \textbf{Overall}
+& \textbf{Easy} & \textbf{Med} & \textbf{Hard} & \textbf{Overall} \\
+\midrule
+Zero-Shot CoT              & \textbf{96.7} & \textbf{93.9} & \textbf{94.6} & \textbf{95.0} & \textbf{100} & 97.0 & 94.6 & 97.0 \\
+Few-Shot CoT (8-shot)      & 90.0 & 87.9 & 78.4 & 85.0 & \textbf{100} & \textbf{100} & 94.6 & 98.0 \\
+ToT (BFS-2, depth=3)       & 86.7 & 75.8 & 81.1 & 81.0 & \textbf{100} & \textbf{100} & 94.6 & 98.0 \\
+ToT (BFS-2, depth=6)       & 90.0 & 84.8 & 81.1 & 85.0 & \textbf{100} & \textbf{100} & 94.6 & 98.0 \\
+Self-Consistency (5 paths) & 96.7 & 93.9 & 86.5 & 92.0 & \textbf{100} & \textbf{100} & \textbf{97.3} & \textbf{99.0} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Three results stand out.
+First, every strategy shows the expected easy-to-hard accuracy decay.
+Second, Few-Shot CoT loses the most on hard problems ($-16.2$\,pp vs.\
+Zero-Shot CoT), since its short 2--3-step demonstrations do not
+transfer well to longer reasoning chains.
+Third, ToT (depth=3) collapses on medium problems (75.8\%) because
+3-operation problems exactly exhaust its depth budget, leaving no slack
+for BFS recovery after an initial error.
+After the format fix, Zero-Shot CoT ties Self-Consistency on easy and
+medium buckets and \emph{exceeds} it on hard ($94.6\%$ vs.\ $86.5\%$,
+$+8.1$\,pp)---Zero-Shot CoT with disciplined answer extraction is the
+strongest strategy at the 8B scale across all difficulty buckets.
+
+\subsection{Solution Length Ratio: Reasoning Verbosity and Overthinking}
+\label{sec:results:slr}
+
+Token cost ($\bar{T}$, TPC) does not reveal whether compute is
+well-spent.
+We quantify reasoning verbosity via the \textbf{Solution Length Ratio}
+$\text{SLR} = (\text{model reasoning steps}) / (\text{gold solution
+steps})$, where model steps count \texttt{``= NUMBER''} patterns and
+gold steps are the GSM8K \texttt{<<...>>} annotations
+($\text{SLR}{>}1$ indicates overthinking~\cite{wu2025whenmoreisless};
+average gold length is 3.3 steps).
+Self-Consistency is the most compact strategy ($1.27\times$), even
+below Few-Shot CoT ($1.44\times$) and Zero-Shot CoT ($1.60\times$),
+because averaging across five paths filters out the longest chains.
+ToT (depth=6), by contrast, inflates solution length to $3.30\times$
+(depth=3: $2.72\times$) while only matching Few-Shot CoT in
+accuracy---a clean instance of the \textit{overthinking
+tax}~\cite{wu2025whenmoreisless}: BFS expansions add depth without
+semantic gain because the 8B evaluator cannot prune unproductive
+branches.
+
+\subsection{Cross-Model Comparison: Llama~3.1~8B vs.\ Haiku~4.5}
+\label{sec:results:crossmodel}
+
+To test whether strategy orderings reflect intrinsic prompting
+properties or 8B-scale limitations, we re-ran every strategy on
+Claude Haiku~4.5 with full evaluation identity preserved
+(Sections~\ref{sec:method:crossmodel}--\ref{sec:setup:crossmodel}).
+
+\paragraph{Headline accuracy}
+Table~\ref{tab:crossmodel} reports overall accuracy on the 100-problem
+seed-42 sample under the gold-corrected labels for both models.
+\begin{table*}[t]
+\centering
+\caption{Cross-model accuracy (gold-corrected) on the same
+100-problem GSM8K sample. ``Cost'' is the realized USD cost for the
+full 100-problem run on Haiku~4.5; ZS/FS/SC share a single
+700-request batch with the $50\%$ batch discount.}
+\label{tab:crossmodel}
+\begin{tabular}{@{}lccrc@{}}
+\toprule
+\textbf{Strategy} & \textbf{Llama~3.1~8B} & \textbf{Haiku~4.5} &
+\boldmath$\Delta$ & \textbf{Haiku cost} \\
+\midrule
+Zero-Shot CoT             & 95.0\% & \textbf{97.0\%} & $+2.0$ &
+\multirow{3}{*}{\$0.52 (batch)} \\
+Few-Shot CoT (8-shot)     & 85.0\% & \textbf{98.0\%} & $+13.0$ & \\
+Self-Consistency (5 paths)& 92.0\% & \textbf{99.0\%} & $+7.0$ & \\
+\midrule
+ToT (BFS-2, depth=3)      & 81.0\% & \textbf{98.0\%} & $+17.0$ & \$0.72 (sync) \\
+ToT (BFS-2, depth=6)      & 85.0\% & \textbf{98.0\%} & $+13.0$ & \$2.02 (sync) \\
+\midrule
+\multicolumn{4}{r}{\textbf{Total realized cost on Haiku~4.5:}} &
+\textbf{\$3.26} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Every strategy improves on the stronger backbone, as expected; the more
+interesting observation is that the \emph{gaps between strategies
+collapse}: the five strategies span $14$~pp on Llama (81.0\% to 95.0\%)
+but only $2$~pp on Haiku (97.0\% to 99.0\%).
+The simplest strategy on Haiku (Zero-Shot CoT, 97.0\%) already
+outperforms the most elaborate strategy on Llama (Self-Consistency,
+92.0\%) by $5$~pp---at GSM8K's difficulty, raw backbone capability
+dominates prompting-strategy choice once the backbone is strong enough.
+
+\paragraph{Stratified view}
+The Haiku columns of Table~\ref{tab:strat} report the same Cobbe
+difficulty buckets alongside the Llama numbers.
+Four of five strategies achieve a perfect 63/63 on Easy and Medium;
+Haiku's entire residual error budget lives in the Hard bucket.
+Only Self-Consistency recovers one additional Hard answer (36/37 vs.\
+35/37), mirroring its 8B advantage---Hard accuracy is the sole
+discriminating metric once the backbone nears ceiling.
+
+\paragraph{Cross-model depth ablation: ceiling effect}
+Table~\ref{tab:crossmodel:depth} shows the sharpest single contrast:
+depth=3$\rightarrow$6 gains $+4.0$~pp on Llama but $0.0$~pp on Haiku at
+$2.8\times$ the token cost.
+\begin{table}[t]
+\centering
+\caption{Cross-model ToT depth ablation ($\Delta$ = gold-corrected accuracy).}
+\label{tab:crossmodel:depth}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Backbone} &
+\textbf{depth=3} & \textbf{depth=6} & \boldmath$\Delta$ \\
+\midrule
+Llama~3.1~8B   & 81.0\% & 85.0\% & $+4.0$\,pp \\
+Haiku~4.5      & 98.0\% & 98.0\% & $\phantom{+}0.0$\,pp \\
+\midrule
+Haiku token cost &
+\multicolumn{3}{r}{depth=6 is $3.1\times$ input and $2.4\times$ output of depth=3} \\
+\bottomrule
+\end{tabular}
+\end{table}
+On Haiku neither depth beats Zero-Shot CoT on Hard (both 94.6\%);
+ToT's depth parameter buys accuracy only when the base model has
+headroom to lose and the evaluator has branches to discriminate.
+
+\paragraph{Self-Consistency verifier saturation}
+On Llama the verifier gap is $+7.0$\,pp (Pass@5 = 99\%,
+majority-vote = 92\%): the correct answer is present in the five
+paths but discarded by majority voting.
+On Haiku the gap is $0.0$\,pp (Pass@5 = majority-vote = 98\%): on
+the two remaining errors, \emph{none} of the five paths produces the
+correct answer.
+Path diversity has collapsed (98/100 problems show unanimous 5/5
+voting), confirming that Self-Consistency's headroom is a model-scale
+artefact, not an intrinsic strategy benefit.
+
+\subsection{Strategy Agreement: Pairwise Cohen's $\kappa$ Across Backbones}
+\label{sec:results:kappa}
+
+Accuracy alone does not reveal whether two strategies are correct on
+the \emph{same} problems.
+We therefore compute all pairwise \textbf{Cohen's $\kappa$}~\cite{cohen1960kappa}
+over the same 100-problem gold-corrected sample, treating each strategy
+as a binary classifier; $\kappa=0$ is chance, $\kappa=1$ is perfect
+agreement (Landis--Koch ranges~\cite{landis1977kappa}; see also Artstein
+and Poesio~\cite{artstein2008agreement} on agreement coefficients for
+language data).
+
+\begin{table}[t]
+\centering
+\caption{Pairwise Cohen's $\kappa$ between the five strategies
+(100-problem seed-42 sample, gold-corrected).
+\textbf{Lower triangle:} Llama~3.1~8B; \textbf{upper triangle:}
+Haiku~4.5.}
+\label{tab:kappa}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+& \textbf{ZS} & \textbf{FS} & \textbf{SC} & \textbf{d=3} & \textbf{d=6} \\
+\midrule
+ZS-CoT  & --     & 0.385 & 0.492 & \textbf{0.795} & \textbf{0.795} \\
+FS-CoT  & 0.243  & --    & 0.662 & 0.490 & 0.490 \\
+SC (5)  & 0.262  & \textbf{0.563} & --    & 0.662 & 0.662 \\
+ToT d=3 & 0.095  & 0.435 & 0.207 & --    & \textbf{1.000} \\
+ToT d=6 & 0.027  & 0.216 & 0.078 & \textbf{0.011} & --    \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The two backbones invert.
+On Llama (lower triangle), the two ToT depths reach near-zero pairwise
+agreement ($\kappa=0.011$) despite sharing the same BFS-2 algorithm and
+evaluator prompt---BFS exploration at the 8B scale is stochastic rather
+than deliberate---while Zero-Shot CoT shows only fair-to-slight
+agreement with every other strategy ($\kappa \in [0.027, 0.262]$), the
+genuine complementarity that drives the $+7.0$\,pp Pass@5 headroom
+(Section~\ref{sec:results:passk}).
+On Haiku (upper triangle) the picture reverses: the two ToT depths
+reach $\kappa=1.000$ (perfect problem-by-problem concordance) and both
+agree with Zero-Shot CoT at $\kappa=0.795$, so deliberate-search
+machinery collapses into single-chain behaviour.
+The overall range collapses from $[0.011,\,0.563]$ on Llama to
+$[0.385,\,1.000]$ on Haiku: \emph{strategy independence itself decays
+with model scale}.
+
+\subsection{Ablation Study}
+Two secondary Few-Shot CoT ablations (N=50, seed=42) are summarised in
+text.
+\emph{Temperature:} greedy decoding (88.0\%) outperforms stochastic
+sampling at $T{=}0.7$ (86.0\%) by $2$\,pp, a marginal but consistent
+advantage for deterministic decoding on arithmetic tasks.
+\emph{Prompt sensitivity:} accuracy across three 8-shot example sets
+spans $6$\,pp (82.0\%--88.0\%)---Set-1 underperforms (82.0\%) while the
+canonical Wei et al.\ examples and Set-2 both reach 88.0\%---indicating
+moderate sensitivity to example choice.
+
+%------------------------------------------------------------------------
+\section{Discussion}
+\label{sec:discussion}
+
+\medskip\noindent\textbf{Zero-shot CoT wins; Self-Consistency no longer dominates.}
+
+The 10-pp gap between Zero-Shot and Few-Shot CoT (Table~\ref{tab:main})
+indicates that Llama~3.1~8B already internalised step-by-step reasoning
+during pre-training, so the 8-shot demonstrations inject systematic
+noise rather than signal---a prompt-format mismatch that is actively
+harmful, not merely neutral.
+Once the answer-extraction fix lifts Zero-Shot CoT to 95.0\%,
+Self-Consistency (at $5\times$ the cost) is strictly Pareto-dominated:
+its per-path Pass@1 (87.0\%) sits below the greedy chain.
+
+\medskip\noindent\textbf{Accuracy--cost trade-off.}
+
+On a log-scale cost axis (average API calls per problem), Zero-Shot CoT
+($\sim$1 call, 95.0\%) lies alone on the Pareto frontier; every other
+configuration is dominated---Self-Consistency costs $5\times$ for
+$-3.0$\,pp, Few-Shot CoT matches the cost at $-10.0$\,pp, and ToT costs
+$21$--$45\times$ for $-10$ to $-14$\,pp (see $\bar{T}$/TPC in
+Table~\ref{tab:main}).
+Where accuracy is paramount and cost secondary, Self-Consistency is the
+practical choice; otherwise Zero-Shot CoT offers the best
+accuracy-per-call ratio.
+
+\medskip\noindent\textbf{ToT and the ceiling effect.}
+
+ToT (depth=6) matches but never beats the CoT baselines on either
+backbone, so the absence of a ToT advantage is not an artefact of an
+undersized evaluator.
+Two factors explain this on Llama: GSM8K problems resolve in 3--5 steps
+that CoT already handles, and the \textit{sure/maybe/impossible}
+evaluator (the same 8B model) is too weak to discriminate, collapsing
+BFS toward a near-linear chain (the depth ablation buys only
+$+4.0$\,pp at $2.1\times$ cost).
+The Haiku replication sharpens this into a \emph{ceiling effect}: the
+inter-strategy spread collapses from $14$~pp to $2$~pp, the
+depth=3$\rightarrow$6 gain falls to $0.0$\,pp, and the
+Self-Consistency verifier gap shrinks from $+7.0$ to $0.0$\,pp because
+no sampled path recovers the problems voting gets wrong.
+The pairwise $\kappa$ analysis confirms this independently
+(Table~\ref{tab:kappa}): Llama's ToT depths agree at only
+$\kappa=0.011$ (stochastic exploration) versus $\kappa=1.000$ on Haiku
+(deterministic ceiling).
+Deliberation- and ensemble-style strategies thus buy accuracy only when
+the base model has headroom to lose and identifiable wrong branches to
+prune.
+
+\medskip\noindent\textbf{Answer extraction is a confound, not a detail.}
+
+Before the format fix, Zero-Shot CoT (88.0\%) was statistically
+indistinguishable from Few-Shot CoT and ToT (depth=6) at 85.0\%, and a
+reader would reasonably conclude that the three strategies perform
+alike at the 8B scale.
+After appending a single output-format instruction---which changes
+nothing about how the model reasons---Zero-Shot CoT becomes the clear
+leader at 95.0\%, and the gain concentrates in the hard bucket where
+trailing-modifier numbers are most common.
+The methodological implication is that, especially for smaller models,
+benchmark rankings can be sensitive to answer-extraction format rather
+than to the reasoning method under study; comparisons across prompting
+strategies should hold the extraction format fixed or report it
+explicitly, lest a parsing artefact masquerade as a method effect.
+
+\medskip\noindent\textbf{Error analysis and limitations.}
+
+Across all strategies and both backbones, the dominant failure mode is
+arithmetic: the model builds the correct reasoning structure but
+miscomputes one step, and the error propagates---on Haiku every
+residual error is of this kind, confirming that arithmetic brittleness
+persists even at frontier scale, only attenuated.
+The main limitations are: (1)~exact-match accuracy ignores reasoning
+quality; (2)~the cross-model comparison covers only two families---adding
+Mistral, Qwen, or Gemma at the 7--8B scale would separate pre-training
+data quality from raw scale; and (3)~GSM8K's short arithmetic horizon
+means these findings should not be extrapolated to long-horizon
+planning benchmarks where ToT reported larger gains~\cite{yao2023tot}.
+
+%------------------------------------------------------------------------
+\section{Conclusion}
+\label{sec:conclusion}
+
+We evaluated Zero-Shot CoT, Few-Shot CoT, ToT (at two search depths),
+and Self-Consistency on GSM8K across Llama~3.1~8B and Claude Haiku~4.5.
+On Llama, Zero-Shot CoT with disciplined answer extraction (95.0\%) is
+both the most accurate and the most cost-efficient strategy---a strict
+Pareto dominator---while ToT only matches Few-Shot CoT and its depth
+ablation yields diminishing returns ($+4.0$\,pp at $2.1\times$ cost)
+due to weak 8B-evaluator discrimination rather than insufficient search
+depth.
+We further show that this format alignment is not a cosmetic
+detail but a confound in CoT benchmarking: the same $+7$\,pp it
+contributes reorders the strategies, so reported method gaps can
+partly reflect answer-extraction format and must be controlled.
+Replicating all five strategies on the stronger backbone with full
+evaluation identity preserved exposes a \emph{ceiling effect}: the
+inter-strategy gap collapses from $14$ to $2$~pp, the ToT depth gain
+vanishes, and the Self-Consistency verifier gap closes---deliberation-
+and ensemble-style strategies buy real accuracy only when the base
+model has headroom to lose and identifiable wrong branches to prune.
+
+\paragraph{Future work}
+Replacing the categorical \textit{sure/maybe/impossible} evaluator with
+a learned scorer is the most direct route to better ToT on 8B-class
+models, and the $7.0$\,pp Pass@5--vote verification gap on Llama
+suggests that an external verifier---rather than larger ensembles---is
+the main opportunity at fixed sample budget.
+Extending the comparison to additional open-weight families (Mistral,
+Qwen, Gemma at the 7--8B scale) would disentangle pre-training data
+quality from raw scale and test whether the ceiling effect generalises.
+
+%------------------------------------------------------------------------
+\begin{thebibliography}{00}
+
+\bibitem{brown2020gpt3}
+T. Brown \textit{et al.}, ``Language models are few-shot learners,'' in
+\textit{Adv. Neural Inf. Process. Syst. (NeurIPS)}, vol. 33, 2020,
+pp. 1877--1901.
+
+\bibitem{wei2022cot}
+J. Wei \textit{et al.}, ``Chain-of-thought prompting elicits reasoning
+in large language models,'' in \textit{Adv. Neural Inf. Process. Syst.
+(NeurIPS)}, vol. 35, 2022, pp. 24824--24837.
+
+\bibitem{kojima2022zeroshot}
+T. Kojima, S. S. Gu, M. Reid, Y. Matsuo, and Y. Iwasawa, ``Large
+language models are zero-shot reasoners,'' in \textit{Adv. Neural Inf.
+Process. Syst. (NeurIPS)}, vol. 35, 2022, pp. 22199--22213.
+
+\bibitem{yao2023tot}
+S. Yao \textit{et al.}, ``Tree of thoughts: Deliberate problem solving
+with large language models,'' in \textit{Adv. Neural Inf. Process. Syst.
+(NeurIPS)}, vol. 36, 2023.
+
+\bibitem{cobbe2021gsm8k}
+K. Cobbe \textit{et al.}, ``Training verifiers to solve math word
+problems,'' arXiv:2110.14168, 2021.
+o
+\bibitem{wang2022selfconsistency}
+X. Wang \textit{et al.}, ``Self-consistency improves chain of thought
+reasoning in language models,'' in \textit{Proc. Int. Conf. Learn.
+Represent. (ICLR)}, 2023.
+
+\bibitem{zhang2022autocot}
+Z. Zhang, A. Zhang, M. Li, and A. Smola, ``Automatic chain of thought
+prompting in large language models,'' in \textit{Proc. Int. Conf. Learn.
+Represent. (ICLR)}, 2023.
+
+\bibitem{zhou2022ltm}
+D. Zhou \textit{et al.}, ``Least-to-most prompting enables complex
+reasoning in large language models,'' in \textit{Proc. Int. Conf. Learn.
+Represent. (ICLR)}, 2023.
+
+\bibitem{ockbench2025}
+OckBench Authors, ``OckBench: Measuring the efficiency of LLM
+reasoning,'' arXiv:2511.05722, 2025.
+
+\bibitem{tale2024}
+T. Han \textit{et al.}, ``Token-budget-aware LLM reasoning,''
+arXiv:2412.18547, 2024.
+
+\bibitem{chen2021codex}
+M. Chen \textit{et al.}, ``Evaluating large language models trained on
+code,'' arXiv:2107.03374, 2021.
+
+\bibitem{wu2025whenmoreisless}
+Y. Wu \textit{et al.}, ``When more is less: Understanding
+chain-of-thought length in LLMs,'' arXiv:2502.07266, 2025.
+
+\bibitem{cohen1960kappa}
+J. Cohen, ``A coefficient of agreement for nominal scales,''
+\textit{Educational and Psychological Measurement}, vol. 20, no. 1,
+pp. 37--46, 1960.
+
+\bibitem{landis1977kappa}
+J. R. Landis and G. G. Koch, ``The measurement of observer agreement
+for categorical data,'' \textit{Biometrics}, vol. 33, no. 1,
+pp. 159--174, 1977.
+
+\bibitem{artstein2008agreement}
+R. Artstein and M. Poesio, ``Inter-coder agreement for computational
+linguistics,'' \textit{Computational Linguistics}, vol. 34, no. 4,
+pp. 555--596, 2008.
+
+\end{thebibliography}
+
+\end{document}

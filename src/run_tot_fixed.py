@@ -1,7 +1,7 @@
 """
 Fixed Tree-of-Thoughts runner.
 
-Fixes applied vs original tot_solver.py:
+Fixes applied vs the original ToT implementation:
   1. depth=6 instead of 3 (most GSM8K problems need 4-8 steps)
   2. Final extraction call after BFS (model reads full reasoning, outputs #### N)
   3. extract_answer prioritises #### X pattern (consistent with CoT scripts)
