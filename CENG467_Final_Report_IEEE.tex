@@ -16,6 +16,10 @@
 \usepackage[hidelinks]{hyperref}
 \setlength{\emergencystretch}{3em}
 
+% Slightly tighten table row padding to fit the page limit
+% (purely cosmetic; no table content, columns, or margins are changed)
+\renewcommand{\arraystretch}{0.95}
+
 % Tighten bibliography vertical spacing to fit the page limit
 % (purely cosmetic; no reference content is changed)
 \let\oldthebibliography\thebibliography
@@ -248,7 +252,7 @@ We use GSM8K~\cite{cobbe2021gsm8k}, a benchmark of 8,792 grade-school
 math word problems requiring 2--8 chained reasoning steps.
 All five configurations (Zero-Shot CoT, Few-Shot CoT, ToT depth=3,
 ToT depth=6, and Self-Consistency) use the same 100-problem random
-sample of the test split (seed~$= 42$).
+sample of GSM8K's 1,319-item test split (seed~$= 42$).
 One item in our sample contains a gold-label annotation error
 (see the \emph{GSM8K annotation error} paragraph below); we manually
 verified the correct value and use the corrected label in all
@@ -270,7 +274,7 @@ We also report the \textit{parse failure rate} (responses yielding no
 numeric prediction).
 Llama~3.1~8B never spontaneously produced the \texttt{\#\#\#\#} marker,
 so every response used the last-number fallback, which succeeded on all
-490 evaluated responses (parse failure rate~$= 0\%$).
+500 evaluated responses (parse failure rate~$= 0\%$).
 
 \subsection{Answer-Extraction Format Fix}
 An initial Zero-Shot CoT run sometimes ended with a trailing-modifier
@@ -292,12 +296,15 @@ and the format must be held fixed---or reported---for a fair comparison
 (see Section~\ref{sec:discussion}).
 
 \subsection{GSM8K Annotation Error (Gold-Label Correction)}
-Manual inspection identified one annotation error in our sample
-(the \textit{carnival} item): the official gold label \$2{,}280 omits
-one addend; the correct total is $430+750+300+700=\$2{,}180$.
-We adopt the corrected label for all reported accuracies; Zero-Shot CoT
-and ToT depth=6 (both produced 2{,}180) shift from incorrect to correct,
-consistent with the $\sim$1--2\% annotation noise floor of
+Manual inspection identified one annotation error in our sample (the
+\textit{carnival} item): GSM8K's own calculator-annotated solution,
+\texttt{750+430+400+700=2280}, substitutes Maryam's \$400 excess over
+Sarah for Sarah's own \$300 contribution; the correct total is
+$430+750+300+700=\$2{,}180$. We adopt the corrected label for all
+reported accuracies. On Llama, Zero-Shot CoT and ToT depth=6 shift
+from incorrect to correct; on Haiku, all five strategies gain a
+uniform $+1$\,pp. In both cases the correction leaves strategy ranking
+unchanged, consistent with the $\sim$1--2\% annotation noise floor of
 GSM8K~\cite{cobbe2021gsm8k}.
 
 \subsection{Infrastructure}
@@ -425,9 +432,9 @@ problems and reached a 4/5 or 3/5 majority on a further 30\%, so 95\%
 of problems admit a clean decision (88.2\% average majority margin),
 confirming that 5 paths suffice for reliable consensus.
 \emph{Pass@k}~\cite{chen2021codex} (the fraction of problems where at
-least one of the first $k$ paths is correct): Pass@1 $=87.0\%$ matches
-greedy Few-Shot CoT (85.0\%), so a single stochastic sample adds no
-consistent gain, whereas Pass@5 reaches $99.0\%$.
+least one of the first $k$ paths is correct): Pass@1 $=86.4\%$ closely
+tracks greedy Few-Shot CoT (85.0\%), so a single stochastic sample adds
+no consistent gain, whereas Pass@5 reaches $99.0\%$.
 This exposes a $+7.0$\,pp \textit{verification gap} over majority
 voting (92.0\%): in 7 of 100 problems the correct answer is among the
 five sampled paths but loses the vote, indicating that a smarter
@@ -589,8 +596,8 @@ headroom to lose and the evaluator has branches to discriminate.
 On Llama the verifier gap is $+7.0$\,pp (Pass@5 = 99\%,
 majority-vote = 92\%): the correct answer is present in the five
 paths but discarded by majority voting.
-On Haiku the gap is $0.0$\,pp (Pass@5 = majority-vote = 98\%): on
-the two remaining errors, \emph{none} of the five paths produces the
+On Haiku the gap is $0.0$\,pp (Pass@5 = majority-vote = 99\%): on
+the one remaining error, \emph{none} of the five paths produces the
 correct answer.
 Path diversity has collapsed (98/100 problems show unanimous 5/5
 voting), confirming that Self-Consistency's headroom is a model-scale
@@ -660,7 +667,7 @@ moderate sensitivity to example choice.
 \section{Discussion}
 \label{sec:discussion}
 
-\medskip\noindent\textbf{Zero-shot CoT wins; Self-Consistency no longer dominates.}
+\vspace{4.5pt}\noindent\textbf{Zero-shot CoT wins; Self-Consistency no longer dominates.}
 
 The 10-pp gap between Zero-Shot and Few-Shot CoT (Table~\ref{tab:main})
 indicates that Llama~3.1~8B already internalised step-by-step reasoning
@@ -669,9 +676,9 @@ noise rather than signal---a prompt-format mismatch that is actively
 harmful, not merely neutral.
 Once the answer-extraction fix lifts Zero-Shot CoT to 95.0\%,
 Self-Consistency (at $5\times$ the cost) is strictly Pareto-dominated:
-its per-path Pass@1 (87.0\%) sits below the greedy chain.
+its per-path Pass@1 (86.4\%) sits below the greedy chain.
 
-\medskip\noindent\textbf{Accuracy--cost trade-off.}
+\vspace{4.5pt}\noindent\textbf{Accuracy--cost trade-off.}
 
 On a log-scale cost axis (average API calls per problem), Zero-Shot CoT
 ($\sim$1 call, 95.0\%) lies alone on the Pareto frontier; every other
@@ -683,7 +690,7 @@ Where accuracy is paramount and cost secondary, Self-Consistency is the
 practical choice; otherwise Zero-Shot CoT offers the best
 accuracy-per-call ratio.
 
-\medskip\noindent\textbf{ToT and the ceiling effect.}
+\vspace{4.5pt}\noindent\textbf{ToT and the ceiling effect.}
 
 ToT (depth=6) matches but never beats the CoT baselines on either
 backbone, so the absence of a ToT advantage is not an artefact of an
@@ -706,7 +713,7 @@ Deliberation- and ensemble-style strategies thus buy accuracy only when
 the base model has headroom to lose and identifiable wrong branches to
 prune.
 
-\medskip\noindent\textbf{Answer extraction is a confound, not a detail.}
+\vspace{4.5pt}\noindent\textbf{Answer extraction is a confound, not a detail.}
 
 Before the format fix, Zero-Shot CoT (88.0\%) was statistically
 indistinguishable from Few-Shot CoT and ToT (depth=6) at 85.0\%, and a
@@ -722,7 +729,7 @@ than to the reasoning method under study; comparisons across prompting
 strategies should hold the extraction format fixed or report it
 explicitly, lest a parsing artefact masquerade as a method effect.
 
-\medskip\noindent\textbf{Error analysis and limitations.}
+\vspace{4.5pt}\noindent\textbf{Error analysis and limitations.}
 
 Across all strategies and both backbones, the dominant failure mode is
 arithmetic: the model builds the correct reasoning structure but
@@ -770,6 +777,8 @@ Qwen, Gemma at the 7--8B scale) would disentangle pre-training data
 quality from raw scale and test whether the ceiling effect generalises.
 
 %------------------------------------------------------------------------
+\begingroup
+\small
 \begin{thebibliography}{00}
 
 \bibitem{brown2020gpt3}
@@ -795,7 +804,7 @@ with large language models,'' in \textit{Adv. Neural Inf. Process. Syst.
 \bibitem{cobbe2021gsm8k}
 K. Cobbe \textit{et al.}, ``Training verifiers to solve math word
 problems,'' arXiv:2110.14168, 2021.
-o
+
 \bibitem{wang2022selfconsistency}
 X. Wang \textit{et al.}, ``Self-consistency improves chain of thought
 reasoning in language models,'' in \textit{Proc. Int. Conf. Learn.
@@ -843,5 +852,6 @@ linguistics,'' \textit{Computational Linguistics}, vol. 34, no. 4,
 pp. 555--596, 2008.
 
 \end{thebibliography}
+\endgroup
 
 \end{document}
